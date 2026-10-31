@@ -1,6 +1,6 @@
 # Nymeria Motion Data: S3 Pipeline and Classification on AWS SageMaker
 
-An end-to-end workflow on AWS: ingest 2,809 files from Meta's Nymeria egocentric motion dataset into S3, turn 173,616 narrated actions into a sequence-level modeling table, and compare XGBoost, LightGBM, and Random Forest classifiers. It also shows how to find and fix label leakage in a proxy-labeled problem.
+An end-to-end workflow on AWS: ingest 2,809 files from Meta's Nymeria egocentric motion dataset into S3, turn 173,616 narrated actions into a sequence-level modeling table, and compare XGBoost, LightGBM, and Random Forest classifiers. A leakage audit then shows that the original 0.99 ROC-AUC came mostly from the model reconstructing its own labeling rule, and measures what the data can actually predict.
 
 Built for the Cloud Computing course in the University of San Diego M.S. in Applied Data Science program.
 
@@ -9,7 +9,7 @@ Built for the Cloud Computing course in the University of San Diego M.S. in Appl
 - **Idempotent S3 ingestion.** Streams files from the dataset manifest to S3 in 1 MB chunks, checks each object's size before uploading, and writes a download log back to S3, so reruns only fetch missing or incomplete files.
 - **Sequence-level feature table.** Joins 1,100 metadata records with aggregated atomic-action narrations, plus motion trajectory, text complexity, and engineered behavior features.
 - **Model comparison.** Grid-searched XGBoost, LightGBM, and Random Forest with stratified 5-fold CV, exporting train, validation, and test splits to S3 in SageMaker JumpStart format.
-- **Leakage audit.** The engineered "discomfort" proxy label was defined from features the model could also see. A corrected evaluation drops those features and groups CV by participant.
+- **Leakage audit.** The engineered "discomfort" proxy label was defined from features the model could also see. A 2x2 ablation separates label leakage from participant overlap, and a reproducible local script reruns the whole pipeline without AWS.
 
 ## Architecture
 
@@ -32,52 +32,76 @@ The dataset is licensed CC BY-NC 4.0. No raw data is stored in this repo; the no
 
 ## Results
 
-### Corrected evaluation (participant-grouped 5-fold CV)
+All numbers below come from `scripts/run_local.py` on 841 sequences from 197 participants (60% positive class). The script reproduces the original SageMaker result (LightGBM test ROC-AUC 0.990 vs 0.989 in the notebook) before applying the fixes.
 
-<!-- Fill in from the V3 section of the notebook -->
+### Which fix matters? (LightGBM, 5-fold CV)
+
+| Setup | Accuracy | F1 | ROC-AUC |
+|---|---|---|---|
+| Original features, random CV | 0.941 | 0.950 | 0.984 |
+| Original features, participant-grouped CV | 0.944 | 0.953 | 0.984 |
+| Leakage-free features, random CV | 0.817 | 0.849 | 0.884 |
+| Leakage-free features, participant-grouped CV | 0.810 | 0.842 | 0.883 |
+
+### Corrected model comparison (leakage-free features, participant-grouped CV)
 
 | Model | Accuracy | F1 | ROC-AUC |
 |---|---|---|---|
-| Majority baseline | TBD | TBD | 0.500 |
-| Random Forest | TBD | TBD | TBD |
-| XGBoost | TBD | TBD | TBD |
-| LightGBM | TBD | TBD | TBD |
+| Majority baseline | 0.600 | 0.750 | 0.500 |
+| Random Forest | 0.819 | 0.848 | 0.885 |
+| XGBoost | 0.805 | 0.839 | **0.888** |
+| LightGBM | 0.810 | 0.842 | 0.883 |
 
-### What changed and why
+### What happened
 
-The first modeling pass (V2) reported a test ROC-AUC of 0.989 for LightGBM. That score was inflated by two problems:
+The `discomfort_proxy` label marks a sequence as positive when any of `efficiency_score`, `fragmentation`, or `motion_intensity` is in its top quartile. Those scores are computed from `num_actions`, `unique_actions`, `head_trajectory_m`, and `action_duration_sec`. The original feature set included `fragmentation` itself plus `num_actions` and `head_trajectory_m`, so the models could largely rebuild the rule.
 
-1. **Label leakage.** The `discomfort_proxy` label was defined with quantile thresholds on `efficiency_score`, `fragmentation`, and `motion_intensity`. The feature set included `fragmentation` directly, plus `head_trajectory_m` and `num_actions`, which are about 0.99 and 0.98 correlated with the other two label inputs. The models were reconstructing the labeling rule.
-2. **Participant overlap.** A random split put different sequences from the same participant in both train and test.
+The corrected evaluation removes every label input, every feature computed from one (`avg_words_per_action`, `wrist_motion_intensity`), and anything correlated above 0.9 with them (`observer_trajectory_m`), leaving 18 features.
 
-The V3 section of the notebook removes every label input and anything correlated above 0.9 with them, then evaluates with `StratifiedGroupKFold` grouped by participant.
-
-<!-- Add one or two sentences here once V3 is run, for example:
-"With leakage removed, ROC-AUC fell to X, showing the proxy label is not predictable from independent behavioral features. A genuine discomfort label, such as participant self-reports, would be needed for this task." -->
+- **Label leakage explained the inflated score.** Removing those features cut ROC-AUC from 0.984 to 0.883.
+- **Participant overlap did not.** Grouping folds by participant changed ROC-AUC by less than 0.002, so the models are not memorizing individuals.
+- **What 0.88 means.** Wrist motion, session timing, and narration text predict the proxy well above the baseline. Because the proxy is still a rule built from session statistics, this shows the other measurements carry information about pace and head movement. It does not show the models can detect physical discomfort; that would need a ground-truth label such as participant self-reports.
 
 ## Repository structure
 
 ```
 .
 ├── notebooks/
-│   └── nymeria_pipeline_and_modeling.ipynb   # ingestion, features, modeling, V3 leakage fix
+│   └── nymeria_pipeline_and_modeling.ipynb   # original SageMaker workflow + leakage-corrected section
+├── scripts/
+│   └── run_local.py                          # runs the pipeline and leakage audit on a laptop
+├── results/                                  # ablation and model comparison tables
 ├── requirements.txt
 └── README.md
 ```
 
 ## How to run
 
-1. Open the notebook in a SageMaker Studio or notebook instance with an execution role that can read and write your bucket.
-2. Set your bucket name:
+### Locally (no AWS needed)
+
+1. Request access to Nymeria on the [Project Aria site](https://www.projectaria.com/datasets/nymeria/) and download the `Nymeria_download_urls.json` manifest into the repo root. It is git-ignored, since the links are personal and expire.
+2. Create an environment:
    ```bash
-   export NYMERIA_BUCKET=your-bucket-name
+   conda create -n nymeria python=3.11 -y
+   conda activate nymeria
+   conda install -c conda-forge pandas numpy scikit-learn xgboost lightgbm requests -y
    ```
-3. Upload the Nymeria manifest (`Nymeria_download_urls.json`, available after accepting the dataset terms on the Project Aria site) to the bucket root.
-4. Install dependencies with `pip install -r requirements.txt` and run the notebook top to bottom.
+3. Run the pipeline:
+   ```bash
+   python scripts/run_local.py --manifest Nymeria_download_urls.json
+   ```
+   This downloads about 60 MB of metadata and narration files to `data/nymeria/`, rebuilds the feature table, reproduces the original V2 score, and writes the ablation and corrected comparison to `results/`.
+
+### On AWS SageMaker
+
+1. Open the notebook in SageMaker Studio with an execution role that can read and write your bucket.
+2. Set `NYMERIA_BUCKET` to your bucket name and upload the manifest to the bucket root.
+3. Install dependencies with `pip install -r requirements.txt` and run the notebook top to bottom.
 
 ## Possible next steps
 
 - Replace the proxy label with a ground-truth target, such as participant self-reported comfort or the dataset's activity scenario labels.
+- Check feature dependence with SHAP to see which of the 18 remaining features carry the most signal.
 - Add SHAP explanations and tune the decision threshold for recall on the positive class (outlined in the notebook).
 - Move the ingestion step into a scheduled SageMaker Processing job.
 

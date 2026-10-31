@@ -1,0 +1,5 @@
+setup,accuracy,f1,roc_auc,roc_auc_std
+"Original features, random CV",0.941,0.95,0.984,0.009
+"Original features, participant-grouped CV",0.944,0.953,0.984,0.005
+"Leakage-free features, random CV",0.817,0.849,0.884,0.036
+"Leakage-free features, participant-grouped CV",0.81,0.842,0.883,0.011

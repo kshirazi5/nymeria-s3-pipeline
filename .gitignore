@@ -7,3 +7,5 @@ data/
 *.csv
 *.json
 !requirements.txt
+!results/
+!results/*.csv
