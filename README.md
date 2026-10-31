@@ -110,3 +110,7 @@ The corrected evaluation removes every label input, every feature computed from 
 Group project with [Bart Teeuwen](https://github.com/bartteeuwen). This repo contains my ingestion pipeline, feature engineering, and modeling notebook. The original group repo is [here](https://github.com/bartteeuwen/USD-Data-Science-Cloud-Computing-Class).
 
 Dataset: Ma et al., *Nymeria: A Massive Collection of Multimodal Egocentric Daily Motion in the Wild*, ECCV 2024.
+
+## AI assistance
+
+I used Claude (Anthropic) to review this repository from a hiring manager's perspective. It flagged that the proxy label was built from features the model could also see, and helped me write `scripts/run_local.py`, the leakage ablation, and this README. I ran the full pipeline myself on the complete dataset, confirmed it reproduces the original notebook result (0.990 vs 0.989), and reviewed the code. The original S3 ingestion, feature engineering, and SageMaker modeling were my ADS-508 coursework.
