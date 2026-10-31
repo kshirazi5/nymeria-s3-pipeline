@@ -1,4 +1,9 @@
-.conda/
 .ipynb_checkpoints/
-*.json
+__pycache__/
+*.pyc
+.env
+.DS_Store
+data/
 *.csv
+*.json
+!requirements.txt

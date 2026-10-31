@@ -1,130 +1,88 @@
-# Predicting User Discomfort in Augmented Reality
+# Nymeria Motion Data: S3 Pipeline and Classification on AWS SageMaker
 
-This repository contains an **end-to-end machine learning and MLOps project** focused on predicting user discomfort in AR smart glasses using behavioral interaction data.
+An end-to-end workflow on AWS: ingest 2,809 files from Meta's Nymeria egocentric motion dataset into S3, turn 173,616 narrated actions into a sequence-level modeling table, and compare XGBoost, LightGBM, and Random Forest classifiers. It also shows how to find and fix label leakage in a proxy-labeled problem.
 
-Completed as part of the **M.S. in Applied Data Science (ADS 508 – Data Science with Cloud Computing)** at the University of San Diego.
+Built for the Cloud Computing course in the University of San Diego M.S. in Applied Data Science program.
 
----
+## Highlights
 
-## Project Overview
+- **Idempotent S3 ingestion.** Streams files from the dataset manifest to S3 in 1 MB chunks, checks each object's size before uploading, and writes a download log back to S3, so reruns only fetch missing or incomplete files.
+- **Sequence-level feature table.** Joins 1,100 metadata records with aggregated atomic-action narrations, plus motion trajectory, text complexity, and engineered behavior features.
+- **Model comparison.** Grid-searched XGBoost, LightGBM, and Random Forest with stratified 5-fold CV, exporting train, validation, and test splits to S3 in SageMaker JumpStart format.
+- **Leakage audit.** The engineered "discomfort" proxy label was defined from features the model could also see. A corrected evaluation drops those features and groups CV by participant.
 
-REAL Glass is a consumer electronics company building AR smart glasses in a market projected to reach **$120B by 2034**.
+## Architecture
 
-A key barrier to adoption is **user discomfort** (e.g., nausea, eye strain, dizziness), with research suggesting:
-- ~45% of users experience side effects  
-- ~25% still experience symptoms after 1 hour
+```mermaid
+flowchart LR
+    M[Nymeria manifest<br/>1,100 sequences] --> I[Streaming ingest<br/>size-checked, idempotent]
+    I --> S3[(Amazon S3<br/>raw files + download log)]
+    S3 --> F[SageMaker notebook<br/>parse, aggregate, engineer features]
+    F --> T[Sequence-level table<br/>841 rows]
+    T --> SP[Train / validation / test<br/>exported to S3]
+    SP --> MD[XGBoost, LightGBM, Random Forest<br/>grid search + CV]
+    MD --> E[Leakage-corrected evaluation<br/>participant-grouped CV]
+```
 
-This project explores whether **machine learning can detect discomfort early**, enabling real-time interventions that improve user experience and extend wear time.
+## Data
 
----
+[Nymeria](https://www.projectaria.com/datasets/nymeria/) (Meta Reality Labs) is a large dataset of real-world human motion captured with Project Aria glasses and wrist devices, with natural-language narrations of each action. This project uses the lightweight subset: per-sequence metadata (motion trajectories, durations, participant attributes) and atomic-action narration CSVs.
 
-## Objective
+The dataset is licensed CC BY-NC 4.0. No raw data is stored in this repo; the notebook downloads it to your own S3 bucket.
 
-Build a system that can:
+## Results
 
-- Predict discomfort risk from behavioral and motion signals  
-- Detect early signs of discomfort before users disengage  
-- Enable **real-time software interventions** (no hardware changes required)  
-- Provide a scalable MLOps framework for deployment  
+### Corrected evaluation (participant-grouped 5-fold CV)
 
----
+<!-- Fill in from the V3 section of the notebook -->
 
-## Approach
+| Model | Accuracy | F1 | ROC-AUC |
+|---|---|---|---|
+| Majority baseline | TBD | TBD | 0.500 |
+| Random Forest | TBD | TBD | TBD |
+| XGBoost | TBD | TBD | TBD |
+| LightGBM | TBD | TBD | TBD |
 
-- **Dataset:** Meta Nymeria (Project Aria), 1,100+ AR sessions  
-- **Data Sources:** metadata, narration logs, derived motion + interaction features  
-- **Feature Engineering:**  
-  - Motion intensity  
-  - Interaction efficiency  
-  - Fragmentation (repetitive behavior)  
-  - Text-based interaction complexity  
-- **Target:** Proxy discomfort label derived from behavioral thresholds (no direct user feedback available)  
+### What changed and why
 
----
+The first modeling pass (V2) reported a test ROC-AUC of 0.989 for LightGBM. That score was inflated by two problems:
 
-## Model & Performance
+1. **Label leakage.** The `discomfort_proxy` label was defined with quantile thresholds on `efficiency_score`, `fragmentation`, and `motion_intensity`. The feature set included `fragmentation` directly, plus `head_trajectory_m` and `num_actions`, which are about 0.99 and 0.98 correlated with the other two label inputs. The models were reconstructing the labeling rule.
+2. **Participant overlap.** A random split put different sequences from the same participant in both train and test.
 
-Multiple models were evaluated:
+The V3 section of the notebook removes every label input and anything correlated above 0.9 with them, then evaluates with `StratifiedGroupKFold` grouped by participant.
 
-- Random Forest (baseline)  
-- XGBoost  
-- **LightGBM (selected)**  
+<!-- Add one or two sentences here once V3 is run, for example:
+"With leakage removed, ROC-AUC fell to X, showing the proxy label is not predictable from independent behavioral features. A genuine discomfort label, such as participant self-reports, would be needed for this task." -->
 
-**Final Results:**
-- ROC-AUC ≈ 0.98  
-- Strong separation between discomfort and non-discomfort sessions
+## Repository structure
 
-Key insight:
-> Discomfort is not driven by a single factor — it emerges from **patterns of inefficient, fragmented, and unstable interaction behavior**
+```
+.
+├── notebooks/
+│   └── nymeria_pipeline_and_modeling.ipynb   # ingestion, features, modeling, V3 leakage fix
+├── requirements.txt
+└── README.md
+```
 
----
+## How to run
 
-## Production Design
+1. Open the notebook in a SageMaker Studio or notebook instance with an execution role that can read and write your bucket.
+2. Set your bucket name:
+   ```bash
+   export NYMERIA_BUCKET=your-bucket-name
+   ```
+3. Upload the Nymeria manifest (`Nymeria_download_urls.json`, available after accepting the dataset terms on the Project Aria site) to the bucket root.
+4. Install dependencies with `pip install -r requirements.txt` and run the notebook top to bottom.
 
-The system is designed for **real-time AR environments**:
+## Possible next steps
 
-- Session data → transformed into lightweight feature set  
-- Features → sent to SageMaker endpoint  
-- Model → returns discomfort probability  
-- System → triggers interventions (e.g., adjust depth, pacing, content placement)  
+- Replace the proxy label with a ground-truth target, such as participant self-reported comfort or the dataset's activity scenario labels.
+- Add SHAP explanations and tune the decision threshold for recall on the positive class (outlined in the notebook).
+- Move the ingestion step into a scheduled SageMaker Processing job.
 
-Also includes:
-- Batch scoring for monitoring and retraining  
-- Drift detection and performance tracking  
-- Model versioning and rollback capability  
+## Credits
 
----
+Group project with [Bart Teeuwen](https://github.com/bartteeuwen). This repo contains my ingestion pipeline, feature engineering, and modeling notebook. The original group repo is [here](https://github.com/bartteeuwen/USD-Data-Science-Cloud-Computing-Class).
 
-## Key Takeaways
-
-- User discomfort is predictable from behavior  
-- Behavioral features outperform simple duration metrics 
-- Software can mitigate hardware limitations  
-- Real-time intervention is feasible with lightweight features  
-
----
-
-## Limitations
-
-- Target variable is a **proxy**, not true user-reported discomfort  
-- Model performance reflects learned behavioral thresholds, not validated outcomes  
-- Future validation requires **real user feedback data**
-
----
-
-## Future Enhancements
-
-- Collect real user comfort feedback (ground truth labels)  
-- Introduce **time-series / sequence modeling** (e.g., LSTM)  
-- Optimize decision thresholds for real-world tradeoffs  
-- Add interpretability (e.g., SHAP)  
-
----
-
-## Why This Project Matters
-
-This project reframes AR discomfort as a **software + data problem**, not just a hardware limitation.
-
-Instead of reacting after users disengage, it enables:
-> **predict → intervene → improve experience in real time**
-
-This approach supports:
-- Higher retention  
-- Longer wear time  
-- Scalable adoption of AR as a computing platform  
-
----
-
-## Authors
-
-- Bart Sosa-Teeuwen  
-- Kamran Shirazi  
-- Nikita Rogers  
-
----
-
-## Notes
-
-- Built using AWS SageMaker (Learner Lab environment)  
-- Data sourced from Meta Project Aria (Nymeria dataset)  
-- Includes full pipeline: ingestion → modeling → deployment design  
+Dataset: Ma et al., *Nymeria: A Massive Collection of Multimodal Egocentric Daily Motion in the Wild*, ECCV 2024.
